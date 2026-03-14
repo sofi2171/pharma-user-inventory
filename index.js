@@ -4,95 +4,97 @@ const axios = require('axios');
 const cors = require('cors');
 
 const app = express();
-
-// Middlewares
 app.use(cors());
 app.use(express.json());
 
-// 1. Health Check
-app.get('/', (req, res) => {
-    res.send('🚀 PharmPro AI Engine is LIVE with Failover Support!');
-});
-
-// 2. API Key Rotation List
-// Render ke Environment Variables mein GROQ_API_KEY_1, GROQ_API_KEY_2 wagaira add karein
+// API Keys loading from .env
 const API_KEYS = [
     process.env.GROQ_API_KEY_1,
     process.env.GROQ_API_KEY_2,
     process.env.GROQ_API_KEY_3,
     process.env.GROQ_API_KEY_4,
     process.env.GROQ_API_KEY_5
-].filter(key => key); // Khali keys ko nikaal dega
+].filter(key => key);
 
-// 3. Main Route
+app.get('/', (req, res) => {
+    res.send('🚀 PharmPro Multi-Key Parallel AI Engine is LIVE!');
+});
+
+// Helper function to call Groq API
+async function callGroq(apiKey, subPrompt) {
+    const response = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
+        model: "llama-3.3-70b-versatile",
+        messages: [
+            {
+                role: "system",
+                content: `You are a Pharmacy Data Expert.
+                Return ONLY JSON with root key "medicines". 
+                Fields: name, power, qty, price, expiry (YYYY-MM-DD).
+                Use real brand names. Realistic prices in PKR.`
+            },
+            { role: "user", content: subPrompt }
+        ],
+        temperature: 0.3,
+        response_format: { type: "json_object" }
+    }, {
+        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        timeout: 60000 
+    });
+    
+    const data = JSON.parse(response.data.choices[0].message.content);
+    return data.medicines || [];
+}
+
 app.post('/api/process-medicine', async (req, res) => {
     const { prompt } = req.body;
+    if (!prompt) return res.status(400).json({ error: "Prompt empty hai!" });
 
-    if (!prompt) return res.status(400).json({ error: "Pehle medicine list likhein!" });
-    if (API_KEYS.length === 0) return res.status(500).json({ error: "Server par koi API Key nahi mili!" });
+    // Check if user wants bulk generation (e.g., "Generate 100 medicines")
+    const match = prompt.match(/(\d+)/);
+    const totalCount = match ? parseInt(match[1]) : 0;
 
-    let lastError = null;
-
-    // --- FAILOVER LOOP (Agli API Key try karega agar pehli fail ho) ---
-    for (let i = 0; i < API_KEYS.length; i++) {
-        const currentKey = API_KEYS[i];
+    // Agar 30 se zyada medicines hain, to parallel processing karein
+    if (totalCount > 30 && API_KEYS.length > 1) {
+        console.log(`⚡ Parallel Processing start for ${totalCount} items...`);
+        
+        // Data ko 2 hisson mein taqseem karna (Chunking)
+        const half = Math.ceil(totalCount / 2);
+        const prompts = [
+            `Generate ${half} popular medicines starting with letters A to M.`,
+            `Generate ${totalCount - half} popular medicines starting with letters N to Z.`
+        ];
 
         try {
-            console.log(`Trying with API Key #${i + 1}...`);
+            // Do keys ko ek saath call karna (Parallel)
+            const tasks = [
+                callGroq(API_KEYS[0], prompts[0]),
+                callGroq(API_KEYS[1] || API_KEYS[0], prompts[1])
+            ];
 
-            const response = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
-                model: "llama-3.3-70b-versatile",
-                messages: [
-                    {
-                        role: "system",
-                        content: `You are a Pharmacy Expert. Extract medicines into a JSON object.
-                        Rule 1: Always use a root key "medicines" for the array.
-                        Rule 2: Maximum 50 items per response to avoid cutting the JSON.
-                        Rule 3: Fields: name, power, qty, price, expiry (YYYY-MM-DD).
-                        Example: {"medicines": [{"name":"Panadol","power":"500mg","qty":10,"price":50,"expiry":"2027-12-31"}]}`
-                    },
-                    {
-                        role: "user",
-                        content: prompt
-                    }
-                ],
-                temperature: 0,
-                response_format: { type: "json_object" }
-            }, {
-                headers: {
-                    "Authorization": `Bearer ${currentKey}`,
-                    "Content-Type": "application/json"
-                },
-                timeout: 50000 // 50 seconds wait
-            });
-
-            // AI ka raw content nikaalo
-            let aiContent = response.data.choices[0].message.content;
-            let parsedData = JSON.parse(aiContent);
-
-            // Data ko array mein convert karo
-            const finalArray = parsedData.medicines || parsedData.items || (Array.isArray(parsedData) ? parsedData : [parsedData]);
-
-            console.log(`✅ Success with Key #${i + 1}! Items: ${finalArray.length}`);
-            return res.json(finalArray);
-
+            const results = await Promise.all(tasks);
+            const combinedData = [...results[0], ...results[1]];
+            
+            console.log(`✅ Parallel Success! Total items: ${combinedData.length}`);
+            return res.json(combinedData);
         } catch (error) {
-            console.error(`❌ Key #${i + 1} Failed:`, error.message);
-            lastError = error;
-            // Agar ye aakhri key thi aur wo bhi fail ho gayi
-            if (i === API_KEYS.length - 1) break;
+            console.error("Parallel Error, falling back to single key...");
         }
     }
 
-    // Agar saari keys fail ho jayein
-    res.status(500).json({
-        error: "Sari API Keys block hain ya busy hain. Thori dair baad try karein.",
-        details: lastError ? lastError.message : "Timeout"
-    });
+    // --- FALLBACK: Single Key Rotation (For small requests or if parallel fails) ---
+    let lastError = null;
+    for (let i = 0; i < API_KEYS.length; i++) {
+        try {
+            const data = await callGroq(API_KEYS[i], prompt);
+            return res.json(data);
+        } catch (error) {
+            console.error(`❌ Key #${i+1} failed, trying next...`);
+            lastError = error;
+        }
+    }
+
+    res.status(500).json({ error: "Sari keys block hain.", details: lastError?.message });
 });
 
-// Port Setting for Render
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+app.listen(PORT, '0.0.0.0', () => console.log(`Server on port ${PORT}`));
