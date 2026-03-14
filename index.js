@@ -4,35 +4,34 @@ const cors = require('cors');
 
 const app = express();
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Root Route (Checking ke liye)
 app.get('/', (req, res) => {
-    res.send('PharmPro AI Backend is Running!');
+    res.send('PharmPro AI Backend is Running! System is ready for Allopathic extraction.');
 });
 
-// Main AI Route
 app.post('/api/process-medicine', async (req, res) => {
     try {
         const { prompt } = req.body;
         const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-        if (!prompt) {
-            return res.status(400).json({ error: "Prompt is required" });
-        }
-
-        if (!GROQ_API_KEY) {
-            return res.status(500).json({ error: "API Key is missing in Render settings" });
-        }
+        if (!prompt) return res.status(400).json({ error: "Prompt is required" });
+        if (!GROQ_API_KEY) return res.status(500).json({ error: "API Key missing in Render" });
 
         const response = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
             model: "llama-3.3-70b-versatile",
             messages: [
                 {
                     role: "system",
-                    content: "Extract medicine details into JSON. Fields: name (string), power (string), qty (number), price (number), expiry (YYYY-MM-DD). If data is missing, use empty strings or 0. Return ONLY JSON."
+                    content: `You are a professional Pharmacist. Extract data from any Allopathic medicine description.
+                    Rules:
+                    1. name: Brand name only (e.g., Panadol, Augmentin, Flagyl).
+                    2. power: Extract strength accurately (e.g., 500mg, 625mg, 120ml, 1g, 0.5%).
+                    3. qty: Extract numbers only. If user says '10 boxes', calculate or use 10.
+                    4. price: Extract price as a number.
+                    5. expiry: Convert to YYYY-MM-DD. If year is '26', make it '2026-12-31'. If missing, use '2027-12-31'.
+                    Return ONLY a valid JSON object.`
                 },
                 {
                     role: "user",
@@ -47,17 +46,22 @@ app.post('/api/process-medicine', async (req, res) => {
             }
         });
 
-        const aiData = response.data.choices[0].message.content;
-        res.json(JSON.parse(aiData));
+        let aiContent = response.data.choices[0].message.content;
+
+        // JSON safety check
+        if (typeof aiContent === 'string') {
+            aiContent = JSON.parse(aiContent);
+        }
+
+        res.json(aiContent);
 
     } catch (error) {
-        console.error("Error details:", error.response ? error.response.data : error.message);
+        console.error("Server Error:", error.response ? error.response.data : error.message);
         res.status(500).json({ error: "AI processing failed" });
     }
 });
 
-// Port Binding for Render
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server is live on port ${PORT}`);
+    console.log(`Smart Backend live on port ${PORT}`);
 });
