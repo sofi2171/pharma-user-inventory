@@ -1,7 +1,7 @@
 {
-  "name": "pharmpro-ai-backend",
+  "name": "pharma-ai-backend",
   "version": "1.0.0",
-  "description": "AI Backend for Medicine Extraction",
+  "description": "Medicine data extractor",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -10,5 +10,8 @@
     "axios": "^1.6.0",
     "cors": "^2.8.5",
     "express": "^4.18.2"
+  },
+  "engines": {
+    "node": ">=14.0.0"
   }
 }
